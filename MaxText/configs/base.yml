@@ -20,6 +20,17 @@ model_name: "default" # override config settings to match a specific model. othe
 override_model_config: False # When set to true allows overriding model parameters via CLI for the purpose of debugging/testing.
 normalization_layer_epsilon: 1.e-05
 
+# DyT Normalization Configuration
+norm_type: 'rms'  # 'rms' for RMSNorm (default), 'tanh' for DynamicTanh, 'shifterf' for DynamicErf
+# DyT alpha initialization values for different normalization layers
+attn_alpha_init_value: 1.0  # alpha init for pre-attention normalization
+ffn_alpha_init_value: 1.0   # alpha init for pre-FFN normalization  
+decoder_alpha_init_value: 1.0  # alpha init for final decoder norm
+# DyT shift initialization value (only used for shifterf norm type)
+shift_init_value: 0.0
+# DyT shared scale for embeddings
+use_shared_scale: False  # If True, multiply embeddings by a learnable shared_scale initialized to sqrt(emb_dim)
+
 ################################## CHECKPOINTING ##################################
 # Checkpointing makes the following choices in the following order, starting with (1):
 #   (1) If there is already a checkpoint for this run_name, we load the latest entire checkpoint.

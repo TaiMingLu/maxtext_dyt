@@ -36,7 +36,7 @@ from MaxText.layers import pipeline
 from MaxText import maxtext_utils
 from MaxText import multimodal_utils
 from MaxText.layers.attentions import Attention
-from MaxText.layers.normalizations import rms_norm
+from MaxText.layers.normalizations import rms_norm, create_norm_layer
 from MaxText.layers.embeddings import attend_on_embedding, embed_as_linen, positional_embedding_as_linen
 from MaxText.layers.quantizations import AqtQuantization as Quant
 from MaxText.layers import (
@@ -95,12 +95,15 @@ class DecoderLayer(nn.Module):
 
     inputs = checkpoint_name(inputs, "decoder_layer_input")
     # inputs: embedded inputs to the decoder with shape [batch, length, emb_dim]
-    lnx = rms_norm(
+    # Use DyT normalization with attn_alpha_init_value
+    attn_alpha_init = getattr(cfg, 'attn_alpha_init_value', 1.0)
+    lnx = create_norm_layer(
+        config=cfg,
         num_features=inputs.shape[-1],
+        alpha_init_value=attn_alpha_init,
         dtype=cfg.dtype,
         weight_dtype=cfg.weight_dtype,
         name="pre_self_attention_norm",
-        epsilon=cfg.normalization_layer_epsilon,
         kernel_axes=("norm",),
     )(inputs)
     if model_mode == MODEL_MODE_PREFILL:
@@ -406,7 +409,14 @@ class Decoder(nn.Module):
         DecoderBlockType.SIMPLE_MLP,
         DecoderBlockType.LLAMA4,
     ):
-      return functools.partial(rms_norm, num_features=num_features)
+      # Use DyT normalization with decoder_alpha_init_value for final norm
+      decoder_alpha_init = getattr(self.config, 'decoder_alpha_init_value', 1.0)
+      return functools.partial(
+          create_norm_layer,
+          config=self.config,
+          num_features=num_features,
+          alpha_init_value=decoder_alpha_init,
+      )
     elif self.config.decoder_block == DecoderBlockType.GPT3:
       return functools.partial(gpt3.gpt3_layer_norm, num_features=num_features, reductions_in_fp32=False, use_bias=True)
     else:
@@ -497,6 +507,17 @@ class Decoder(nn.Module):
       # TODO(hengtaoguo): Add support for other multimodal models such as Llama4, refactor if needed
       else:
         raise ValueError(f"Unsupported model_name for multimodal: {cfg.model_name}")
+
+    # DyT: Apply shared_scale to embeddings if enabled
+    if getattr(cfg, 'use_shared_scale', False):
+      import math
+      shared_scale = self.param(
+          'shared_scale',
+          nn.initializers.constant(math.sqrt(cfg.emb_dim)),
+          (1,),
+          cfg.weight_dtype,
+      )
+      y = y * shared_scale
 
     y = nn.Dropout(rate=cfg.dropout_rate, broadcast_dims=(-2,))(y, deterministic=deterministic)
     y = y.astype(cfg.dtype)

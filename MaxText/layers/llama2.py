@@ -33,7 +33,7 @@ from MaxText.layers.linears import mlp_block
 from MaxText.layers import quantizations
 from MaxText.layers.attentions import Attention
 from MaxText.layers.quantizations import AqtQuantization as Quant
-from MaxText.layers.normalizations import rms_norm
+from MaxText.layers.normalizations import rms_norm, create_norm_layer
 from MaxText.common_types import MODEL_MODE_PREFILL
 
 
@@ -71,13 +71,16 @@ class LlamaDecoderLayer(nn.Module):
 
     inputs = nn.with_logical_constraint(inputs, activation_axis_names)
     inputs = checkpoint_name(inputs, "decoder_layer_input")
-    lnx_rms = rms_norm(
+    # Use DyT normalization with attn_alpha_init_value
+    attn_alpha_init = getattr(cfg, 'attn_alpha_init_value', 1.0)
+    lnx_rms = create_norm_layer(
+        config=cfg,
         num_features=inputs.shape[-1],
+        alpha_init_value=attn_alpha_init,
         dtype=cfg.dtype,
         weight_dtype=cfg.weight_dtype,
         name="pre_self_attention_layer_norm",
         kernel_axes=("norm",),
-        epsilon=cfg.normalization_layer_epsilon,
     )
     lnx = lnx_rms(inputs)
 
@@ -124,14 +127,17 @@ class LlamaDecoderLayer(nn.Module):
     attention_lnx = nn.with_logical_constraint(attention_lnx, activation_axis_names)
     intermediate_inputs = inputs + attention_lnx
 
-    # Fully Connected
-    hidden_states = rms_norm(
+    # Fully Connected (pre-FFN normalization)
+    # Use DyT normalization with ffn_alpha_init_value
+    ffn_alpha_init = getattr(cfg, 'ffn_alpha_init_value', 1.0)
+    hidden_states = create_norm_layer(
+        config=cfg,
         num_features=intermediate_inputs.shape[-1],
+        alpha_init_value=ffn_alpha_init,
         dtype=cfg.dtype,
         weight_dtype=cfg.weight_dtype,
         name="post_self_attention_layer_norm",
         kernel_axes=("norm",),
-        epsilon=cfg.normalization_layer_epsilon,
     )(intermediate_inputs)
     hidden_states = nn.with_logical_constraint(hidden_states, activation_axis_names)
 
