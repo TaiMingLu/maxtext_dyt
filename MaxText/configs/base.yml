@@ -88,6 +88,7 @@ use_wandb: False
 wandb_project: ""
 wandb_run_name: ""
 wandb_run_id: ""
+wandb_resume: ""
 
 # If true save config to GCS in {base_output_directory}/{run_name}/
 save_config_to_gcs: False

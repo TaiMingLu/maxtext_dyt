@@ -83,7 +83,14 @@ class MetricLogger:
         run_id = getattr(config, "wandb_run_id", "")
         if run_id:
           wandb_kwargs["id"] = run_id
-          # Allow resuming existing runs when a run id is provided.
+
+        resume_cfg = getattr(config, "wandb_resume", "")
+        if isinstance(resume_cfg, str):
+          resume_cfg = resume_cfg.strip()
+        if resume_cfg:
+          wandb_kwargs["resume"] = resume_cfg
+        elif run_id:
+          # Allow resuming existing runs when a run id is provided and no explicit resume flag is given.
           wandb_kwargs["resume"] = "allow"
 
         wandb.init(**wandb_kwargs)
