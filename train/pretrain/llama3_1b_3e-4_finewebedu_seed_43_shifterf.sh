@@ -104,7 +104,7 @@ python -u multihost_runner_orig.py \
           checkpoint_max_to_keep=100 \
           gcs_metrics=True \
           use_wandb=True \
-          wandb_project=maxtext_dyt \
+          wandb_project=maxtext_1b \
           wandb_run_name=${RUN_NAME} \
           wandb_run_id=${RUN_ID} \
           packing=true \

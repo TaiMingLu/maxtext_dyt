@@ -96,15 +96,22 @@ class MetricLogger:
         relog_source = getattr(config, "wandb_relog_source", "")
         if isinstance(relog_source, str):
           relog_source = relog_source.strip()
-        if relog_source:
-          wandb_kwargs["settings"] = wandb.Settings(relog_source=relog_source)
+        if relog_source and not os.environ.get("WANDB_RELOG_SOURCE"):
+          os.environ["WANDB_RELOG_SOURCE"] = relog_source
 
-        wandb.init(**wandb_kwargs)
+        wandb_run = wandb.init(**wandb_kwargs)
+        max_logging.log(
+            "Initialized Weights & Biases run "
+            f"project={wandb_kwargs.get('project','')}, "
+            f"name={wandb_kwargs.get('name','')}, id={run_id}, resume={wandb_kwargs.get('resume','')}"
+        )
+        self._wandb_run = wandb_run
         # Stash module for later usage without re-importing
         self._wandb = wandb
-      except Exception:  # pylint: disable=broad-except
+      except Exception as exc:  # pylint: disable=broad-except
         # If wandb is not available or initialization fails, disable it gracefully.
         self.use_wandb = False
+        max_logging.log(f"Disabling Weights & Biases logging after init failure: {exc}")
 
   def write_metrics(self, metrics, step, is_training=True):
     """Entry point for all metrics writing in Train's Main."""
