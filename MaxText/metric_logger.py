@@ -21,6 +21,8 @@ limitations under the License.
 import json
 import os
 import queue
+from collections import defaultdict
+from typing import Any, Dict, List, Optional
 
 import numpy as np
 
@@ -32,8 +34,6 @@ from MaxText import maxtext_utils
 from MaxText.utils import gcs_utils
 from MaxText.gcp_workload_monitor import GCPWorkloadMonitor
 from MaxText.globals import EPS
-
-from collections import defaultdict
 
 
 def _prepare_metrics_for_json(metrics, step, run_name):
@@ -58,6 +58,10 @@ class MetricLogger:
     self.learning_rate_schedule = learning_rate_schedule
     self.cumulative_eval_metrics = {"scalar": defaultdict(float)}
     self.buffered_train_metrics = None
+    self._wandb = None
+    self._wandb_relog_requested = False
+    self._wandb_relog_done = False
+    self._wandb_relog_source: Optional[str] = None
     
     # Enable Weights & Biases on process 0 only if requested.
     self.use_wandb = getattr(config, "use_wandb", False) and jax.process_index() == 0
@@ -75,39 +79,39 @@ class MetricLogger:
         except Exception:
           cfg_dict = None
 
-        wandb_kwargs = {
-            "project": getattr(config, "wandb_project", ""),
-            "name": getattr(config, "wandb_run_name", ""),
+        project = getattr(config, "wandb_project", "") or os.environ.get("WANDB_PROJECT", "")
+        run_name = getattr(config, "wandb_run_name", "") or os.environ.get("WANDB_NAME", "")
+        run_id = getattr(config, "wandb_run_id", "") or os.environ.get("WANDB_RUN_ID")
+
+        resume_cfg: Optional[str] = getattr(config, "wandb_resume", None) or os.environ.get("WANDB_RESUME")
+        if isinstance(resume_cfg, str):
+          resume_cfg = resume_cfg.strip() or None
+
+        if resume_cfg == "relog":
+          self._wandb_relog_requested = True
+          self._wandb_relog_source = (
+              getattr(config, "wandb_relog_source", None)
+              or os.environ.get("WANDB_RELOG_SOURCE", "gcs")
+          )
+          resume_cfg = "allow"
+
+        wandb_kwargs: Dict[str, Any] = {
+            "project": project,
+            "name": run_name,
             "config": cfg_dict,
         }
-        run_id = getattr(config, "wandb_run_id", "")
         if run_id:
           wandb_kwargs["id"] = run_id
-
-        resume_cfg = getattr(config, "wandb_resume", "")
-        if isinstance(resume_cfg, str):
-          resume_cfg = resume_cfg.strip()
         if resume_cfg:
           wandb_kwargs["resume"] = resume_cfg
-        elif run_id:
-          # Allow resuming existing runs when a run id is provided and no explicit resume flag is given.
-          wandb_kwargs["resume"] = "allow"
-
-        relog_source = getattr(config, "wandb_relog_source", "")
-        if isinstance(relog_source, str):
-          relog_source = relog_source.strip()
-        if relog_source and not os.environ.get("WANDB_RELOG_SOURCE"):
-          os.environ["WANDB_RELOG_SOURCE"] = relog_source
 
         wandb_run = wandb.init(**wandb_kwargs)
         max_logging.log(
             "Initialized Weights & Biases run "
-            f"project={wandb_kwargs.get('project','')}, "
-            f"name={wandb_kwargs.get('name','')}, id={run_id}, resume={wandb_kwargs.get('resume','')}"
+            f"project={project}, name={run_name}, id={run_id or ''}, resume={wandb_kwargs.get('resume','')}"
         )
-        self._wandb_run = wandb_run
-        # Stash module for later usage without re-importing
         self._wandb = wandb
+        self._wandb_run = wandb_run
       except Exception as exc:  # pylint: disable=broad-except
         # If wandb is not available or initialization fails, disable it gracefully.
         self.use_wandb = False
@@ -116,6 +120,13 @@ class MetricLogger:
   def write_metrics(self, metrics, step, is_training=True):
     """Entry point for all metrics writing in Train's Main."""
     if metrics:
+      if self.use_wandb and self._wandb_relog_requested and not self._wandb_relog_done and jax.process_index() == 0:
+        try:
+          self._maybe_wandb_relog(int(step))
+        except Exception as exc:  # pylint: disable=broad-except
+          max_logging.log(f"Failed to backfill Weights & Biases history: {exc}")
+          self._wandb_relog_done = True
+
       self.log_metrics(metrics, step, is_training)
 
       if self.config.enable_tensorboard:
@@ -238,7 +249,143 @@ class MetricLogger:
       for subkey, subval in val.items():
         flat_metrics[f"{key}/{subkey}"] = float(subval)
     # Use cached module reference to avoid global import
-    self._wandb.log(flat_metrics, step=step)
+    if self._wandb is not None:
+      self._wandb.log(flat_metrics, step=step)
+
+  # -------------------
+  # W&B relog helpers
+  # -------------------
+  def _maybe_wandb_relog(self, current_step: int):
+    """Backfills historical metrics into W&B once, before continuing logging."""
+    if self._wandb is None or self._wandb_relog_done:
+      return
+
+    source = (self._wandb_relog_source or "gcs").lower()
+    if source == "auto":
+      did_relog = self._wandb_try_gcs(current_step)
+      if not did_relog:
+        self._wandb_try_tensorboard(current_step)
+    elif source == "gcs":
+      self._wandb_try_gcs(current_step)
+    elif source == "tensorboard":
+      self._wandb_try_tensorboard(current_step)
+
+    self._wandb_relog_done = True
+
+  def _wandb_try_gcs(self, current_step: int) -> bool:
+    """Reads metric JSONL files from GCS metrics_dir and logs them to W&B."""
+    if self._wandb is None:
+      return False
+
+    metrics_dir = getattr(self.config, "metrics_dir", "")
+    if not metrics_dir or not metrics_dir.startswith("gs://"):
+      return False
+
+    try:
+      from google.cloud import storage  # type: ignore
+    except Exception:
+      return False
+
+    try:
+      bucket_name, prefix = gcs_utils.parse_gcs_bucket_and_prefix(metrics_dir)
+      prefix = gcs_utils.add_trailing_slash(prefix)
+      storage_client = storage.Client()
+      blobs = storage_client.list_blobs(bucket_name, prefix=prefix)
+
+      entries: List[Dict[str, Any]] = []
+      for blob in blobs:
+        if not blob.name.endswith(".txt"):
+          continue
+        try:
+          content = blob.download_as_text()
+        except Exception:
+          continue
+
+        for line in content.splitlines():
+          line = line.strip()
+          if not line:
+            continue
+          try:
+            record = json.loads(line)
+            step_val = int(record.get("step", -1))
+          except Exception:
+            continue
+
+          if step_val < 0 or step_val >= current_step:
+            continue
+
+          filtered = {k: v for k, v in record.items() if k not in ("step", "run_name")}
+          entries.append({"step": step_val, "metrics": filtered})
+
+      if not entries:
+        return False
+
+      dedup: Dict[int, Dict[str, float]] = {}
+      for entry in entries:
+        dedup[entry["step"]] = entry["metrics"]
+
+      for step_val in sorted(dedup.keys()):
+        self._wandb.log(dedup[step_val], step=int(step_val))
+      return True
+    except Exception:
+      return False
+
+  def _wandb_try_tensorboard(self, current_step: int) -> bool:
+    """Parses TensorBoard event files and logs scalars to W&B."""
+    if self._wandb is None:
+      return False
+
+    try:
+      from tensorboard.backend.event_processing.event_accumulator import EventAccumulator  # type: ignore
+    except Exception:
+      return False
+
+    tb_dir_override = os.environ.get("WANDB_RELOG_TB_DIR")
+    if tb_dir_override:
+      tb_dir = tb_dir_override
+    else:
+      base = getattr(self.config, "tensorboard_dir", "")
+      run_name = getattr(self.config, "run_name", "")
+      if not base or not run_name:
+        return False
+      tb_dir = os.path.join(base, run_name)
+
+    if not os.path.isdir(tb_dir):
+      return False
+
+    try:
+      accumulator = EventAccumulator(tb_dir)
+      accumulator.Reload()
+    except Exception:
+      return False
+
+    try:
+      scalar_tags = accumulator.Tags().get("scalars", [])
+    except Exception:
+      return False
+
+    if not scalar_tags:
+      return False
+
+    events_by_step: Dict[int, Dict[str, float]] = {}
+    for tag in scalar_tags:
+      try:
+        events = accumulator.Scalars(tag)
+      except Exception:
+        continue
+
+      for event in events:
+        if event.step >= current_step:
+          continue
+        events_by_step.setdefault(event.step, {})[tag] = float(event.value)
+
+    if not events_by_step:
+      return False
+
+    for step_val in sorted(events_by_step.keys()):
+      self._wandb.log(events_by_step[step_val], step=int(step_val))
+
+    return True
 
   def write_setup_info_to_tensorboard(self, params):
     """Writes setup information like train config params, num model params, and XLA flags to TensorBoard."""
