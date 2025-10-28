@@ -271,6 +271,7 @@ def create_norm_layer(
     scale_init: Initializer = nn.initializers.ones,
     name: Optional[str] = None,
     parameter_memory_host_offload: bool = False,
+    epsilon: Optional[float] = None,
 ):
   """Creates a normalization layer based on config.norm_type.
   
@@ -315,10 +316,10 @@ def create_norm_layer(
         parameter_memory_host_offload=parameter_memory_host_offload,
     )
   else:  # default to 'rms'
-    epsilon = getattr(config, 'normalization_layer_epsilon', 1e-6)
+    epsilon_value = epsilon if epsilon is not None else getattr(config, 'normalization_layer_epsilon', 1e-6)
     return rms_norm(
         num_features=num_features,
-        epsilon=epsilon,
+        epsilon=epsilon_value,
         dtype=dtype,
         weight_dtype=weight_dtype,
         kernel_axes=kernel_axes,
