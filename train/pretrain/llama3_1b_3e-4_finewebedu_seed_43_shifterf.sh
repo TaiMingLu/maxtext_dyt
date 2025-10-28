@@ -44,7 +44,7 @@ export USE_SHARED_SCALE=false
 export NORM_TYPE=shifterf
 
 export RUN_NAME="${NORM_TYPE}_${ATTN_ALPHA_INIT_VALUE}_${FFN_ALPHA_INIT_VALUE}_${DECODER_ALPHA_INIT_VALUE}_${SHIFT_INIT_VALUE}_${USE_SHARED_SCALE}_${MODEL_NAME}_finewebedu_pretrain_shuffled_lr_3e-4_seed_43"
-export RUN_ID="${NORM_TYPE}_${ATTN_ALPHA_INIT_VALUE}_${FFN_ALPHA_INIT_VALUE}_${DECODER_ALPHA_INIT_VALUE}_${SHIFT_INIT_VALUE}_${USE_SHARED_SCALE}_${llama3-1b_finewebedu_pretrain_shuffled_lr_3e-4_seed_43"
+export RUN_ID="${NORM_TYPE}_${ATTN_ALPHA_INIT_VALUE}_${FFN_ALPHA_INIT_VALUE}_${DECODER_ALPHA_INIT_VALUE}_${SHIFT_INIT_VALUE}_${USE_SHARED_SCALE}_llama3-1b_finewebedu_pretrain_shuffled_lr_3e-4_seed_43"
 
 echo "========================"
 echo "running llama3_8b_1b_3e-4.sh"
