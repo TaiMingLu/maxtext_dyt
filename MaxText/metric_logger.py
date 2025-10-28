@@ -93,6 +93,12 @@ class MetricLogger:
           # Allow resuming existing runs when a run id is provided and no explicit resume flag is given.
           wandb_kwargs["resume"] = "allow"
 
+        relog_source = getattr(config, "wandb_relog_source", "")
+        if isinstance(relog_source, str):
+          relog_source = relog_source.strip()
+        if relog_source:
+          wandb_kwargs["settings"] = wandb.Settings(relog_source=relog_source)
+
         wandb.init(**wandb_kwargs)
         # Stash module for later usage without re-importing
         self._wandb = wandb
