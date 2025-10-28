@@ -75,9 +75,18 @@ class MetricLogger:
         except Exception:
           cfg_dict = None
 
-        wandb.init(project=getattr(config, "wandb_project", ""),
-                   name=getattr(config, "wandb_run_name", ""),
-                   config=cfg_dict)
+        wandb_kwargs = {
+            "project": getattr(config, "wandb_project", ""),
+            "name": getattr(config, "wandb_run_name", ""),
+            "config": cfg_dict,
+        }
+        run_id = getattr(config, "wandb_run_id", "")
+        if run_id:
+          wandb_kwargs["id"] = run_id
+          # Allow resuming existing runs when a run id is provided.
+          wandb_kwargs["resume"] = "allow"
+
+        wandb.init(**wandb_kwargs)
         # Stash module for later usage without re-importing
         self._wandb = wandb
       except Exception:  # pylint: disable=broad-except
